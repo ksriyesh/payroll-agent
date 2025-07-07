@@ -1,241 +1,265 @@
-# LangGraph ReAct Agent Template
+# 📊 Payroll Document Parsing Agent
 
 [![CI](https://github.com/langchain-ai/react-agent/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/langchain-ai/react-agent/actions/workflows/unit-tests.yml)
 [![Integration Tests](https://github.com/langchain-ai/react-agent/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/langchain-ai/react-agent/actions/workflows/integration-tests.yml)
-[![Open in - LangGraph Studio](https://img.shields.io/badge/Open_in-LangGraph_Studio-00324d.svg?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NS4zMzMiIGhlaWdodD0iODUuMzMzIiB2ZXJzaW9uPSIxLjAiIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZD0iTTEzIDcuOGMtNi4zIDMuMS03LjEgNi4zLTYuOCAyNS43LjQgMjQuNi4zIDI0LjUgMjUuOSAyNC41QzU3LjUgNTggNTggNTcuNSA1OCAzMi4zIDU4IDcuMyA1Ni43IDYgMzIgNmMtMTIuOCAwLTE2LjEuMy0xOSAxLjhtMzcuNiAxNi42YzIuOCAyLjggMy40IDQuMiAzLjQgNy42cy0uNiA0LjgtMy40IDcuNkw0Ny4yIDQzSDE2LjhsLTMuNC0zLjRjLTQuOC00LjgtNC44LTEwLjQgMC0xNS4ybDMuNC0zLjRoMzAuNHoiLz48cGF0aCBkPSJNMTguOSAyNS42Yy0xLjEgMS4zLTEgMS43LjQgMi41LjkuNiAxLjcgMS44IDEuNyAyLjcgMCAxIC43IDIuOCAxLjYgNC4xIDEuNCAxLjkgMS40IDIuNS4zIDMuMi0xIC42LS42LjkgMS40LjkgMS41IDAgMi43LS41IDIuNy0xIDAtLjYgMS4xLS44IDIuNi0uNGwyLjYuNy0xLjgtMi45Yy01LjktOS4zLTkuNC0xMi4zLTExLjUtOS44TTM5IDI2YzAgMS4xLS45IDIuNS0yIDMuMi0yLjQgMS41LTIuNiAzLjQtLjUgNC4yLjguMyAyIDEuNyAyLjUgMy4xLjYgMS41IDEuNCAyLjMgMiAyIDEuNS0uOSAxLjItMy41LS40LTMuNS0yLjEgMC0yLjgtMi44LS44LTMuMyAxLjYtLjQgMS42LS41IDAtLjYtMS4xLS4xLTEuNS0uNi0xLjItMS42LjctMS43IDMuMy0yLjEgMy41LS41LjEuNS4yIDEuNi4zIDIuMiAwIC43LjkgMS40IDEuOSAxLjYgMi4xLjQgMi4zLTIuMy4yLTMuMi0uOC0uMy0yLTEuNy0yLjUtMy4xLTEuMS0zLTMtMy4zLTMtLjUiLz48L3N2Zz4=)](https://langgraph-studio.vercel.app/templates/open?githubUrl=https://github.com/langchain-ai/react-agent)
 
-This template showcases a [ReAct agent](https://arxiv.org/abs/2210.03629) implemented using [LangGraph](https://github.com/langchain-ai/langgraph), designed for [LangGraph Studio](https://github.com/langchain-ai/langgraph-studio). ReAct agents are uncomplicated, prototypical agents that can be flexibly extended to many tools.
+An intelligent payroll document parsing agent that combines Vision Language Models (VLM) with ReAct reasoning patterns to extract, analyze, and interactively edit payroll information from documents.
 
 ![Graph view in LangGraph studio UI](./static/studio_ui.png)
 
-The core logic, defined in `src/react_agent/graph.py`, demonstrates a flexible ReAct agent that iteratively reasons about user queries and executes actions, showcasing the power of this approach for complex problem-solving tasks.
+## 🎯 What it does
 
-## What it does
+The Payroll Agent follows your intended workflow:
 
-The ReAct agent:
+1. **Document Upload** → User uploads payroll documents (PDF, images)
+2. **VLM Processing** → Converts documents to VLM-friendly format
+3. **Text + Position Extraction** → VLM extracts text with spatial awareness
+4. **ReAct Agent Processing** → Groq LLM processes VLM results
+5. **Interactive Editing** → User can chat to modify payroll data
+6. **Export Results** → Final JSON/CSV output
 
-1. Takes a user **query** as input
-2. Reasons about the query and decides on an action
-3. Executes the chosen action using available tools
-4. Observes the result of the action
-5. Repeats steps 2-4 until it can provide a final answer
+## 🚀 Key Features
 
-By default, it's set up with a basic set of tools, but can be easily extended with custom tools to suit various use cases.
+### 📄 **Document Processing**
+- **Multi-format support**: PDF, PNG, JPEG, and more
+- **VLM-powered extraction**: Uses OpenAI GPT-4o-mini for vision analysis
+- **Spatial awareness**: Extracts text with position context
+- **Automatic conversion**: PDF → PNG for optimal VLM processing
 
-## Getting Started
+### 💬 **Interactive Chat-Based Editing**
+- **Natural language modifications**: "Update Alice's pay rate to $25/hour"
+- **Real-time updates**: Changes reflected immediately
+- **Continuous conversation**: Keep chatting until satisfied
+- **Smart parsing**: Handles complex payroll requests
 
-Assuming you have already [installed LangGraph Studio](https://github.com/langchain-ai/langgraph-studio?tab=readme-ov-file#download), to set up:
+### 🧠 **Dual Model Architecture**
+- **Vision Model**: OpenAI GPT-4o-mini for document analysis
+- **Text Model**: Groq Llama-3.1-8b-instant for reasoning and edits
+- **Fallback strategy**: Text-based processing if VLM fails
 
-1. Create a `.env` file.
+### 📊 **Data Management**
+- **Structured extraction**: Employee ID, name, pay rate, hours, deductions, etc.
+- **Automatic calculations**: Net pay = gross pay - deductions
+- **Export options**: JSON and CSV formats
+- **State persistence**: All changes maintained in conversation
+
+## 🛠️ Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd react-agent
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pip install -e .
+   ```
+
+3. **Set up environment variables**:
+   ```bash
+   cp .env.example .env
+   ```
+
+4. **Configure API keys** in your `.env` file:
+   ```bash
+   # Required for VLM processing
+   OPENAI_API_KEY=your-openai-api-key
+   
+   # Required for text reasoning
+   GROQ_API_KEY=your-groq-api-key
+   ```
+
+## 📋 API Key Setup
+
+### OpenAI (Vision Processing)
+1. Sign up at [OpenAI](https://platform.openai.com/api-keys)
+2. Create an API key
+3. Add to `.env`: `OPENAI_API_KEY=your-key`
+
+### Groq (Text Processing)
+1. Sign up at [Groq Console](https://console.groq.com/keys)
+2. Create an API key
+3. Add to `.env`: `GROQ_API_KEY=your-key`
+
+## 🎮 Usage
+
+### Option 1: Streamlit Interface (Recommended)
 
 ```bash
-cp .env.example .env
+streamlit run streamlit_app.py
 ```
 
-2. Define required API keys in your `.env` file.
+1. **Upload Document**: Drag and drop payroll documents
+2. **VLM Processing**: Automatic text and position extraction
+3. **Interactive Editing**: Chat to modify payroll data
+4. **Export Results**: Download JSON or CSV
 
-The primary [search tool](./src/react_agent/tools.py) [^1] used is [Tavily](https://tavily.com/). Create an API key [here](https://app.tavily.com/sign-in).
+### Option 2: Direct API Usage
 
-<!--
-Setup instruction auto-generated by `langgraph template lock`. DO NOT EDIT MANUALLY.
--->
+```python
+from src.react_agent.state import State
+from src.react_agent.graph import graph
+from langchain_core.messages import HumanMessage
 
-### Setup Model
+# Create state with uploaded document
+state = State(
+    document_uploaded=True,
+    file_path="payroll_document.pdf",
+    messages=[HumanMessage(content="Process this payroll document")]
+)
 
-The defaults values for `model` are shown below:
-
-```yaml
-model: anthropic/claude-3-5-sonnet-20240620
+# Run the agent
+result = await graph.ainvoke(state)
 ```
 
-Follow the instructions below to get set up, or pick one of the additional options.
+## 💬 Interactive Editing Examples
 
-#### Anthropic
-
-To use Anthropic's chat models:
-
-1. Sign up for an [Anthropic API key](https://console.anthropic.com/) if you haven't already.
-2. Once you have your API key, add it to your `.env` file:
+After VLM processing, you can chat to modify payroll data:
 
 ```
-ANTHROPIC_API_KEY=your-api-key
+🤖 "Here's your extracted payroll data..."
+
+👤 "Update Alice's pay rate to $25/hour"
+🤖 "✅ Updated Alice's pay rate to $25.00/hour"
+
+👤 "Add employee David with $30/hour rate, worked 40 hours"
+🤖 "✅ Added employee David with $30.00/hour rate, 40 hours worked"
+
+👤 "Change Clara's deductions to $150"
+🤖 "✅ Changed Clara's deductions to $150.00"
+
+👤 "Calculate net pay for all employees"
+🤖 "✅ Calculated net pay for all employees"
+
+👤 "Export final data"
+🤖 "✅ Here's your final JSON: {...}"
 ```
-#### OpenAI
 
-To use OpenAI's chat models:
+## 🔧 Supported Commands
 
-1. Sign up for an [OpenAI API key](https://platform.openai.com/signup).
-2. Once you have your API key, add it to your `.env` file:
+### **Employee Modifications**
+- `"Update [name]'s pay rate to $[amount]"`
+- `"Set [name]'s employee ID to [id]"`
+- `"Change [name]'s deductions to $[amount]"`
+- `"Fix [name]'s hours to [hours]"`
+
+### **Employee Management**
+- `"Add employee [name] with $[rate]/hour"`
+- `"Remove employee [name]"`
+- `"Add overtime hours for [name]"`
+
+### **Calculations**
+- `"Calculate net pay for all employees"`
+- `"Calculate gross pay for [name]"`
+- `"Update all deductions to [amount]"`
+
+### **Export**
+- `"Export final data"`
+- `"Finalize"`
+- `"Get JSON"`
+
+## 🧪 Testing
+
+Run the test suite:
+```bash
+python test_debug.py
 ```
-OPENAI_API_KEY=your-api-key
+
+This tests:
+- VLM processing workflow
+- Interactive editing functionality
+- State management
+- Export capabilities
+
+## 📁 Project Structure
+
+```
+react-agent/
+├── src/react_agent/
+│   ├── configuration.py    # Model and processing configuration
+│   ├── state.py           # State management with Pydantic models
+│   ├── graph.py           # LangGraph workflow definition
+│   ├── tools.py           # VLM processing and document handling
+│   ├── prompts.py         # System prompts for payroll processing
+│   └── utils.py           # Utility functions
+├── streamlit_app.py       # Web interface
+├── test_debug.py          # Test suite
+└── README.md              # This file
 ```
 
+## 🎯 Workflow Details
 
+### 1. **Document Upload**
+- User uploads payroll document via Streamlit
+- File saved to temp directory
+- Document metadata extracted
 
+### 2. **VLM Processing Node**
+- Document converted to VLM-friendly PNG format
+- OpenAI GPT-4o-mini analyzes document images
+- Extracts text with spatial position awareness
+- Fallback to text-based processing if VLM fails
 
+### 3. **ReAct Agent Node**
+- Groq Llama processes VLM results
+- Structures data into employee payroll objects
+- Handles user requests for modifications
+- Continues conversation until user exports
 
-<!--
-End setup instructions
--->
+### 4. **Interactive Editing**
+- Natural language parsing of modification requests
+- Real-time updates to payroll data
+- State persistence across conversation
+- Validation and error handling
 
+### 5. **Export & Finalization**
+- JSON format with complete payroll data
+- CSV export for spreadsheet compatibility
+- Timestamp and metadata inclusion
 
-3. Customize whatever you'd like in the code.
-4. Open the folder LangGraph Studio!
+## 🔧 Configuration
 
-## How to customize
+### Model Configuration
+```python
+# Default models (configurable)
+text_model = "llama-3.1-8b-instant"      # Groq for reasoning
+vision_model = "gpt-4o-mini"             # OpenAI for VLM
+```
 
-1. **Add new tools**: Extend the agent's capabilities by adding new tools in [tools.py](./src/react_agent/tools.py). These can be any Python functions that perform specific tasks.
-2. **Select a different model**: We default to Anthropic's Claude 3 Sonnet. You can select a compatible chat model using `provider/model-name` via configuration. Example: `openai/gpt-4-turbo-preview`.
-3. **Customize the prompt**: We provide a default system prompt in [prompts.py](./src/react_agent/prompts.py). You can easily update this via configuration in the studio.
+### Processing Limits
+```python
+max_file_size = 10 * 1024 * 1024  # 10MB
+max_pages = 10                     # PDF page limit
+supported_formats = ['.pdf', '.png', '.jpg', '.jpeg']
+```
 
-You can also quickly extend this template by:
+## 🤝 Contributing
 
-- Modifying the agent's reasoning process in [graph.py](./src/react_agent/graph.py).
-- Adjusting the ReAct loop or adding additional steps to the agent's decision-making process.
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests for new functionality
+5. Submit a pull request
 
-## Development
+## 📝 License
 
-While iterating on your graph, you can edit past state and rerun your app from past states to debug specific nodes. Local changes will be automatically applied via hot reload. Try adding an interrupt before the agent calls tools, updating the default system message in `src/react_agent/configuration.py` to take on a persona, or adding additional nodes and edges!
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-Follow up requests will be appended to the same thread. You can create an entirely new thread, clearing previous history, using the `+` button in the top right.
+## 🆘 Support
 
-You can find the latest (under construction) docs on [LangGraph](https://github.com/langchain-ai/langgraph) here, including examples and other references. Using those guides can help you pick the right patterns to adapt here for your use case.
+For issues and questions:
+1. Check the test suite: `python test_debug.py`
+2. Review logs in the terminal
+3. Ensure API keys are correctly configured
+4. Verify document formats are supported
 
-LangGraph Studio also integrates with [LangSmith](https://smith.langchain.com/) for more in-depth tracing and collaboration with teammates.
+## 🎉 Next Steps
 
-[^1]: https://python.langchain.com/docs/concepts/#tools
+1. **Start the Streamlit app**: `streamlit run streamlit_app.py`
+2. **Upload a payroll document**
+3. **Watch the VLM processing**
+4. **Chat to edit payroll data**
+5. **Export your results**
 
-<!--
-Configuration auto-generated by `langgraph template lock`. DO NOT EDIT MANUALLY.
-{
-  "config_schemas": {
-    "agent": {
-      "type": "object",
-      "properties": {
-        "model": {
-          "type": "string",
-          "default": "anthropic/claude-3-5-sonnet-20240620",
-          "description": "The name of the language model to use for the agent's main interactions. Should be in the form: provider/model-name.",
-          "environment": [
-            {
-              "value": "anthropic/claude-1.2",
-              "variables": "ANTHROPIC_API_KEY"
-            },
-            {
-              "value": "anthropic/claude-2.0",
-              "variables": "ANTHROPIC_API_KEY"
-            },
-            {
-              "value": "anthropic/claude-2.1",
-              "variables": "ANTHROPIC_API_KEY"
-            },
-            {
-              "value": "anthropic/claude-3-5-sonnet-20240620",
-              "variables": "ANTHROPIC_API_KEY"
-            },
-            {
-              "value": "anthropic/claude-3-haiku-20240307",
-              "variables": "ANTHROPIC_API_KEY"
-            },
-            {
-              "value": "anthropic/claude-3-opus-20240229",
-              "variables": "ANTHROPIC_API_KEY"
-            },
-            {
-              "value": "anthropic/claude-3-sonnet-20240229",
-              "variables": "ANTHROPIC_API_KEY"
-            },
-            {
-              "value": "anthropic/claude-instant-1.2",
-              "variables": "ANTHROPIC_API_KEY"
-            },
-            {
-              "value": "openai/gpt-3.5-turbo",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-3.5-turbo-0125",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-3.5-turbo-0301",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-3.5-turbo-0613",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-3.5-turbo-1106",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-3.5-turbo-16k",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-3.5-turbo-16k-0613",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-0125-preview",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-0314",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-0613",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-1106-preview",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-32k",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-32k-0314",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-32k-0613",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-turbo",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-turbo-preview",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4-vision-preview",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4o",
-              "variables": "OPENAI_API_KEY"
-            },
-            {
-              "value": "openai/gpt-4o-mini",
-              "variables": "OPENAI_API_KEY"
-            }
-          ]
-        }
-      },
-      "environment": [
-        "TAVILY_API_KEY"
-      ]
-    }
-  }
-}
--->
+The system is ready for production use with your increased OpenAI quota!
