@@ -3,7 +3,7 @@
 [![Open in - LangGraph Studio](
 A sophisticated payroll management system that combines AI-powered document processing with interactive employee management. Built using [LangGraph](https://github.com/langchain-ai/langgraph) and featuring a modern Streamlit web interface with dark theme.
 
-![Graph view in LangGraph studio UI](./static/studio_ui.png)
+
 
 ## 🚀 Features
 
