@@ -1,0 +1,10 @@
+[theme]
+# Dark theme with good contrast
+primaryColor = "#4fc3f7"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#fafafa"
+
+[server]
+# Enable file watching for development
+fileWatcherType = "poll" 

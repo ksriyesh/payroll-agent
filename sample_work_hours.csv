@@ -1,0 +1,6 @@
+Employee Name,Regular Hours,Overtime Hours,Total Hours,Department,Pay Period
+John Doe,40.0,5.0,45.0,Production,2024-12-15
+Jane Smith,38.5,2.5,41.0,Administration,2024-12-15
+Bob Johnson,42.0,8.0,50.0,Production,2024-12-15
+Alice Williams,35.0,3.0,38.0,Administration,2024-12-15
+Charlie Brown,40.0,0.0,40.0,Production,2024-12-15 
