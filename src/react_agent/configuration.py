@@ -16,6 +16,7 @@ else:
 class Configuration(BaseModel):
     """Configuration for the payroll system."""
 
+    # Model configurations
     vlm_model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = "openai/gpt-4o"
     vlm_system_prompt: str = prompts.VLM_DOC_PROCESSOR_PROMPT
     
@@ -24,6 +25,11 @@ class Configuration(BaseModel):
     
     payroll_model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = "openai/gpt-4o"
     payroll_system_prompt: str = prompts.PAYROLL_GENERATOR_PROMPT
+    
+    # API Mode toggle - set to True to enable Azure OpenAI + MAAS mode
+    # When True, the system will look for Azure OpenAI or MAAS environment variables
+    # When False, the system will only use standard OpenAI API key
+    use_azure_or_maas: bool = False
 
     @classmethod
     def from_context(cls) -> "Configuration":

@@ -34,6 +34,13 @@ class PayrollEmployee(BaseModel):
     total_pay: float = Field(..., description="Total pay amount")
 
 
+class PayrollEmployeeList(BaseModel):
+    """List of payroll employees extracted from documents."""
+    model_config = ConfigDict(extra='forbid')
+    
+    employees: List[EmployeeData] = Field(default_factory=list, description="List of extracted employee data")
+
+
 class PayrollReport(BaseModel):
     """Payroll report output."""
     model_config = ConfigDict(extra='forbid')
@@ -51,11 +58,24 @@ class State(BaseModel):
     
     existing_employees: List[EmployeeData] = Field(default_factory=list)
     updated_employees: List[EmployeeData] = Field(default_factory=list)
-    current_employees: List[EmployeeData] = Field(default_factory=list)
+    updates_list: List[EmployeeData] = Field(default_factory=list)
     
     document_content: Optional[str] = Field(default=None)
     document_uploaded: bool = Field(default=False)
+    document_processing_done: bool = Field(default=False)
     user_approval: bool = Field(default=False)
     trigger_payroll: bool = Field(default=False)
     
+    # File data fields for direct graph processing
+    file_data: Optional[str] = Field(default=None, description="Base64 encoded file data")
+    file_path: Optional[str] = Field(default=None, description="Original file name/path")
+    file_type: Optional[str] = Field(default=None, description="MIME type of the file")
+    
     current_pay_data: Optional[Dict[str, Any]] = Field(default=None)
+
+
+class InputState(BaseModel):
+    messages: Annotated[Sequence[AnyMessage], add_messages] = Field(default_factory=list)
+    
+class OutputState(BaseModel):
+    messages: Annotated[Sequence[AnyMessage], add_messages] = Field(default_factory=list)

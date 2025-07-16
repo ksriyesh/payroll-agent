@@ -1,0 +1,17 @@
+# FastAPI dependencies
+fastapi>=0.104.1
+uvicorn>=0.24.0
+python-multipart>=0.0.6
+
+# Image processing
+pillow>=10.0.0
+
+# Core dependencies (matching project requirements)
+pydantic>=2.0.0
+requests>=2.31.0
+python-dotenv>=1.0.1
+
+# LangChain and LangGraph (matching project requirements)
+langchain>=0.2.14
+langchain-openai>=0.1.22
+langgraph>=0.2.6

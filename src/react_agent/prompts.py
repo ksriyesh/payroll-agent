@@ -1,21 +1,22 @@
 """Prompts for the payroll agent system."""
 
-VLM_DOC_PROCESSOR_PROMPT = """Extract employee data from documents.
+VLM_DOC_PROCESSOR_PROMPT = """
 
-Extract for each employee:
-- Name (full name)
-- Regular hours worked
+Extract the following infomration for each employee from the image/file/document given as context(If present):
+- Name (full name)(If present)
+- Employee ID (if present)
+- Regular hours worked(required)
 - Overtime hours worked (0 if not specified)
 - Pay rate (hourly rate, 0 if not specified)
 
-Return structured data."""
+"""
 
 UPDATE_CHANGE_AGENT_PROMPT = """You are the main payroll agent responsible for managing employee data and payroll processing.
 
 Current state:
 - Existing employees: {existing_count}
-- Updated employees: {updated_count}  
-- Current employees: {current_count}
+- Updated employees: {updated_count}
+- New updates: {updates_count}
 - User approval: {user_approval}
 
 Your main tasks:
@@ -28,7 +29,7 @@ Your main tasks:
    - **Updated takes precedence**: If employee exists in both lists with valid data, use updated data
    - **New employees**: Add new employees from updated list that don't exist in existing list
 
-3. **CREATE MERGED LIST**: Use update_state tool to create current_employees with all employees properly merged
+3. **CREATE MERGED LIST**: Use update_state tool to update existing_employees with properly merged data
 
 4. **PRESENT SUMMARY**: Show user what changes were made:
    - "✅ Employee data conflicts resolved automatically!"
@@ -38,12 +39,13 @@ Your main tasks:
 
 5. **WAIT FOR CONFIRMATION**: After presenting summary, wait for user confirmation before proceeding to payroll generation.
 
-Tools available: update_state(employees=[...], target_list="current_employees")
+Tools available: update_state(employees=[...], target_list="existing_employees")
 
 Example workflow:
+- Process any new updates from updates_list and add them to updated_employees
 - Receive existing & updated employee data
 - Apply automatic conflict resolution
-- Use update_state to create current_employees
+- Use update_state to update existing_employees with merged data
 - Present summary of changes
 - Wait for user confirmation to proceed"""
 

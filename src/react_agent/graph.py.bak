@@ -1,0 +1,644 @@
+"""Simple 3-agent payroll system."""
+
+import logging
+import datetime
+from typing import Dict, List, Literal, cast
+from langchain_core.messages import AIMessage
+from langgraph.graph import StateGraph
+from pydantic import BaseModel, Field
+
+from react_agent.configuration import Configuration
+from react_agent.state import State, EmployeeData, PayrollReport
+from react_agent.utils import load_chat_model
+from react_agent.tools import merge_employees
+from react_agent.utils import load_previous_payperiod_data
+logger = logging.getLogger(__name__)
+
+
+
+async def init_node(state: State) -> Dict:
+    """Initialize the workflow and check for file inputs in messages."""
+    result = {}
+    
+    # Check if there's a file in the messages
+    if state.messages and len(state.messages) > 0:
+        last_message = state.messages[-1]
+        
+        # Check if the message has content and if it's a list (multimodal content)
+        if hasattr(last_message, 'content') and isinstance(last_message.content, list):
+            # Look for file or image type content
+            for content_item in last_message.content:
+                if isinstance(content_item, dict) and content_item.get('type') in ['file', 'image']:
+                    # Found a file, set document_uploaded to True
+                    result['document_uploaded'] = True
+                    logger.info("File detected in messages, setting document_uploaded=True")
+                    break
+    
+    # Check if existing_employees is empty, if so load previous pay period data
+    if not state.existing_employees:
+        logger.info("No existing employees found, loading previous pay period data")
+        result['existing_employees'] = await load_previous_payperiod_data()
+    
+    return result
+
+
+
+
+async def vlm_processor(state: State) -> Dict:
+    """Process document to extract employee data."""
+    import tempfile
+    import os
+    import base64
+    from react_agent.utils import process_document_with_files_api
+    
+    config = Configuration.from_context()
+    
+    # Check if there's a file in the messages
+    if not state.messages or len(state.messages) == 0:
+        logger.warning("No messages found in state")
+        return {"updated_employees": []}
+    
+    # Get the last message
+    last_message = state.messages[-1]
+    
+    # Extract file content and prompt from message
+    file_data = None
+    prompt = ""
+    
+    # Handle different message formats
+    if hasattr(last_message, 'content'):
+        if isinstance(last_message.content, str):
+            # Text-only message
+            prompt = last_message.content
+        elif isinstance(last_message.content, list):
+            # Multimodal message
+            for content_item in last_message.content:
+                if isinstance(content_item, dict):
+                    if content_item.get('type') == 'text':
+                        prompt = content_item.get('text', '')
+    
+    # Check for file in additional_kwargs
+    if hasattr(last_message, 'additional_kwargs') and 'files' in last_message.additional_kwargs:
+        files = last_message.additional_kwargs['files']
+        if files and len(files) > 0:
+            file_data = files[0]
+    
+    # If no file found, return early
+    if not file_data:
+        logger.warning("No file content found in message")
+        return {"updated_employees": []}
+    
+    # Process the document with Files API
+    try:
+        # Create temp file with appropriate extension
+        file_ext = os.path.splitext(file_data.get('name', 'file.tmp'))[1]
+        if not file_ext:
+            file_ext = '.tmp'
+        
+        temp_file_fd, temp_file_path = tempfile.mkstemp(suffix=file_ext)
+        os.close(temp_file_fd)
+        
+        # Write file content to temp file
+        with open(temp_file_path, 'wb') as f:
+            f.write(file_data['content'])
+        
+        logger.info(f"Temporary file created: {temp_file_path}")
+        
+        # Process document with Files API - pass the system prompt directly
+        response = await process_document_with_files_api(
+            file_path=temp_file_path,
+            prompt=f"{prompt}\n\nExtract employee data from this document.",
+            model_name=config.vlm_model,
+            system_prompt=config.vlm_system_prompt
+        )
+        
+        # Store document content in state for reference
+        document_content = response.get('content', '')
+        state.document_content = document_content
+        
+        # Get the extracted employees from the response
+        employees = response.get('employees', [])
+        logger.info(f"Successfully extracted {len(employees)} employees from document")
+        
+        # Convert EmployeeData objects to dictionaries to avoid Pydantic validation errors
+        employee_dicts = [emp.model_dump() if hasattr(emp, 'model_dump') else emp for emp in employees]
+        
+        # Clean up temporary file
+        if os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+            logger.info(f"Temporary file removed: {temp_file_path}")
+        
+        # Return the extracted employees in both updated_employees and updates_list
+        return {"updated_employees": employee_dicts, "updates_list": employee_dicts, "document_processing_done": True}
+        
+    except Exception as e:
+        logger.error(f"Error processing document with Files API: {str(e)}")
+        
+        # Clean up temporary file if it exists
+        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+            logger.info(f"Temporary file removed after error: {temp_file_path}")
+        
+        return {"updated_employees": [], "document_processing_done": False}
+            
+            except Exception as e:
+                logger.error(f"Error in structured output extraction: {str(e)}")
+                # Continue to fallback extraction method
+    except Exception as e:
+        logger.error(f"Error processing document with Files API: {str(e)}")
+    
+    # Fallback to manual extraction if structured output fails
+    # At this point, we've already tried the structured approach but it failed
+    # Let's try with regular model without structured output
+    try:
+        # Use regular model without structured output
+        model = load_chat_model(config.vlm_model)
+        response = await model.ainvoke([
+            {"role": "system", "content": f"{config.vlm_system_prompt}\n\nYour response must be a valid JSON object with the following structure:\n{{\"employees\": [{{\"name\": \"string\", \"regular_hours\": number, \"overtime_hours\": number, \"payrate\": number}}, ...]}}"},
+            {"role": "user", "content": f"Extract data from: {state.document_content}"}
+        ])
+        
+        # Process the response manually
+        import json
+        import re
+        
+        # Get content from response
+        content = response.content
+        
+        # Try to extract JSON using different patterns
+        try:
+            # Try different patterns to extract JSON
+            json_patterns = [
+                # Full content as JSON
+                lambda c: json.loads(c),
+                # JSON in code block
+                lambda c: json.loads(re.search(r'```(?:json)?\s*({.*?})\s*```', c, re.DOTALL).group(1)),
+                # JSON with employees key
+                lambda c: json.loads(re.search(r'{\s*"employees"\s*:\s*\[.*?\]\s*}', c, re.DOTALL).group(0)),
+                # JSON array
+                lambda c: {"employees": json.loads(re.search(r'\[\s*{.*?}\s*\]', c, re.DOTALL).group(0))},
+                # Simple JSON object pattern
+                lambda c: json.loads(re.search(r'\{.*\}', c, re.DOTALL).group(0))
+            ]
+            
+            parsed_data = None
+            for pattern_func in json_patterns:
+                try:
+                    parsed_data = pattern_func(content)
+                    break
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    continue
+            
+            if parsed_data is None:
+                raise ValueError("Could not extract JSON from response")
+                
+            # Ensure we have the expected structure
+            if isinstance(parsed_data, list):
+                parsed_data = {"employees": parsed_data}
+            
+            # Create employee objects
+            employees = []
+            for emp_data in parsed_data.get("employees", []):
+                try:
+                    # Create EmployeeData object with validation
+                    emp_obj = EmployeeData(
+                        name=emp_data.get("name", ""),
+                        regular_hours=float(emp_data.get("regular_hours", 0)),
+                        overtime_hours=float(emp_data.get("overtime_hours", 0)),
+                        payrate=float(emp_data.get("payrate", 0))
+                    )
+                    # Convert to dictionary
+                    employees.append(emp_obj.model_dump())
+                except Exception as emp_err:
+                    logger.error(f"Error creating employee object: {str(emp_err)}")
+            
+            # Clean up temporary file
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+                logger.info(f"Temporary file removed: {temp_file_path}")
+            
+            logger.info(f"Successfully extracted {len(employees)} employees using fallback method")
+            return {"updated_employees": employees, "updates_list": employees, "document_processing_done": True}
+        except Exception as nested_error:
+            logger.error(f"Error in manual extraction fallback: {str(nested_error)}")
+    except Exception as e:
+        logger.error(f"Error in fallback extraction: {str(e)}")
+    
+    # Clean up temporary file
+    if os.path.exists(temp_file_path):
+        os.unlink(temp_file_path)
+        logger.info(f"Temporary file removed: {temp_file_path}")
+    
+    # If all extraction methods fail, return empty list
+    logger.warning("All extraction methods failed, returning empty list")
+    return {"updated_employees": [], "updates_list": [], "document_processing_done": True}
+
+
+async def update_agent(state: State) -> Dict:
+    """Main interactive agent."""
+    from langchain_core.messages import AIMessage
+    config = Configuration.from_context()
+    
+    from react_agent.tools import update_state, merge_employees
+    
+    # If we're generating a payroll, return a confirmation message
+    if state.trigger_payroll:
+        return {"messages": [AIMessage(content="Thank you for confirming! The payroll has been successfully generated and is ready for processing.")]}
+    
+    # Load the model
+    model = load_chat_model(config.react_model)
+    
+    # Create a system message with instructions
+    system_message = {
+        "role": "system", 
+        "content": (
+            "You are a payroll assistant. You help users process employee payroll data. "
+            "You can update employee information and generate payroll reports. "
+            "When the user approves the data, you can trigger payroll processing."
+        )
+    }
+    
+    # Check if we have document updates from VLM processor
+    has_document_updates = (
+        len(state.updates_list) > 0 and 
+        state.document_processing_done and
+        not state.user_approval
+    )
+    
+    # Check if we should automatically merge
+    should_auto_merge = (
+        len(state.existing_employees) > 0 and 
+        (len(state.updated_employees) > 0 or len(state.updates_list) > 0) and 
+        not state.user_approval
+    )
+    
+    # Prioritize updates_list over updated_employees if both exist
+    employee_updates = state.updates_list if len(state.updates_list) > 0 else state.updated_employees
+    
+    if should_auto_merge:
+        # Log what we're merging
+        logger.info(f"Merging {len(state.existing_employees)} existing employees with {len(employee_updates)} updates")
+        
+        # Automatically merge employee lists
+        merged_employees = merge_employees(state.existing_employees, employee_updates)
+        
+        # Convert to dictionaries for state update
+        merged_dict = [
+            {
+                "name": emp.name,
+                "regular_hours": emp.regular_hours,
+                "overtime_hours": emp.overtime_hours,
+                "payrate": emp.payrate
+            } for emp in merged_employees
+        ]
+        
+        # Create summary of changes
+        updated_names = {emp.name for emp in employee_updates}
+        existing_names = {emp.name for emp in state.existing_employees}
+        
+        added_names = [emp.name for emp in employee_updates if emp.name not in existing_names]
+        updated_names_list = [emp.name for emp in employee_updates if emp.name in existing_names]
+        preserved_names = [emp.name for emp in state.existing_employees if emp.name not in updated_names]
+        
+        summary_parts = [
+            "✅ **Employee data merged successfully!**",
+            f"📋 **Final employee list: {len(merged_employees)} employees**",
+            ""
+        ]
+        
+        if added_names:
+            summary_parts.append(f"➕ **Added**: {', '.join(added_names)}")
+        if updated_names_list:
+            summary_parts.append(f"🔄 **Updated**: {', '.join(updated_names_list)}")
+        if preserved_names:
+            summary_parts.append(f"💾 **Preserved**: {', '.join(preserved_names)}")
+        
+        summary_parts.extend([
+            "",
+            "**Current employees:**"
+        ])
+        
+        for emp in merged_employees:
+            summary_parts.append(f"- {emp.name}: {emp.regular_hours}h regular, {emp.overtime_hours}h overtime @ ${emp.payrate}/hr")
+        
+        summary_parts.extend([
+            "",
+            "Please confirm this data is correct to proceed with payroll generation."
+        ])
+        
+        # Return the summary without using tool calls since we don't need to update current_employees
+        from langchain_core.messages import AIMessage
+        tool_response = AIMessage(
+            content="\n".join(summary_parts)
+        )
+        
+        # Return the merged employees directly in the state update
+        return {
+            "messages": [tool_response],
+            "updated_employees": merged_dict
+        }
+    
+    # Check if user has confirmed the data and we should generate payroll
+    if state.messages and len(state.messages) > 0 and has_document_updates:
+        last_message = state.messages[-1].content.lower() if hasattr(state.messages[-1], 'content') and isinstance(state.messages[-1].content, str) else ""
+        
+        # Check for confirmation keywords
+        confirmation_keywords = ["confirm", "looks good", "correct", "yes", "approved", "generate payroll", "proceed"]
+        if any(keyword in last_message for keyword in confirmation_keywords):
+            # User has confirmed the data, generate structured payroll output
+            logger.info("User confirmed data, generating payroll output")
+            
+            # Merge the updates with existing data
+            merged_employees = merge_employees(state.existing_employees, state.updates_list)
+            
+            # Calculate payroll for each employee
+            payroll_data = []
+            total_payroll = 0
+            
+            for emp in merged_employees:
+                regular_pay = emp.regular_hours * emp.payrate
+                overtime_pay = emp.overtime_hours * emp.payrate * 1.5
+                total_pay = regular_pay + overtime_pay
+                total_payroll += total_pay
+                
+                payroll_data.append({
+                    "name": emp.name,
+                    "regular_hours": emp.regular_hours,
+                    "overtime_hours": emp.overtime_hours,
+                    "payrate": emp.payrate,
+                    "regular_pay": round(regular_pay, 2),
+                    "overtime_pay": round(overtime_pay, 2),
+                    "total_pay": round(total_pay, 2)
+                })
+            
+            # Create structured JSON output
+            structured_output = {
+                "employees": payroll_data,
+                "total_payroll": round(total_payroll, 2),
+                "pay_period": "Current",
+                "generated_at": datetime.datetime.now().isoformat()
+            }
+            
+            # Store the payroll data in state
+            import json
+            json_output = json.dumps(structured_output, indent=2)
+            
+            # Update state with payroll data and mark as approved
+            return {
+                "current_pay_data": structured_output,
+                "user_approval": True,
+                "trigger_payroll": True,
+                "messages": [AIMessage(content=f"Thank you for confirming! Here's the generated payroll report:\n\n```json\n{json_output}\n```\n\nThe payroll has been successfully generated and is ready for processing.")]
+            }
+    
+    # Check if user is asking for structured output
+    if state.messages and state.current_pay_data:
+        last_message = state.messages[-1].content.lower() if hasattr(state.messages[-1], 'content') and isinstance(state.messages[-1].content, str) else ""
+        if "structured output" in last_message or "json" in last_message or "raw data" in last_message:
+            import json
+            structured_output = json.dumps(state.current_pay_data, indent=2)
+            return {"messages": [AIMessage(content=f"Here's the structured output in JSON format:\n\n```json\n{structured_output}\n```")]}
+    
+    # Check if we have document updates that need user confirmation
+    if has_document_updates and not state.user_approval:
+        # Generate a message asking for user confirmation of the extracted data
+        summary_parts = [
+            "✅ **Employee data extracted from document!**",
+            f"📋 **Extracted employee list: {len(state.updates_list)} employees**",
+            ""
+        ]
+        
+        # Show the extracted employees
+        summary_parts.append("**Extracted employees:**")
+        for emp in state.updates_list:
+            summary_parts.append(f"- {emp.name}: {emp.regular_hours}h regular, {emp.overtime_hours}h overtime @ ${emp.payrate}/hr")
+        
+        # Add comparison with existing employees if available
+        if state.existing_employees:
+            summary_parts.extend([
+                "",
+                "**Existing employees (for reference):**"
+            ])
+            for emp in state.existing_employees:
+                summary_parts.append(f"- {emp.name}: {emp.regular_hours}h regular, {emp.overtime_hours}h overtime @ ${emp.payrate}/hr")
+        
+        summary_parts.extend([
+            "",
+            "Please confirm if this extracted data is correct. If there are any errors, please let me know what needs to be corrected.",
+            "Once confirmed, I'll merge this data with existing records and generate a payroll report."
+        ])
+        
+        return {"messages": [AIMessage(content="\n".join(summary_parts))]}
+    
+    # Regular interaction mode - provide detailed context
+    context_parts = []
+    
+    # Add existing employees details
+    if state.existing_employees:
+        context_parts.append("EXISTING EMPLOYEES (Previous pay period):")
+        for emp in state.existing_employees:
+            context_parts.append(f"- {emp.name}: {emp.regular_hours}h regular, {emp.overtime_hours}h overtime @ ${emp.payrate}/hr")
+    else:
+        context_parts.append("EXISTING EMPLOYEES: None")
+    
+    # Add updated employees details
+    if state.updated_employees:
+        context_parts.append("\nUPDATED EMPLOYEES (From current document):")
+        for emp in state.updated_employees:
+            context_parts.append(f"- {emp.name}: {emp.regular_hours}h regular, {emp.overtime_hours}h overtime @ ${emp.payrate}/hr")
+    else:
+        context_parts.append("\nUPDATED EMPLOYEES: None")
+    
+    # Add current employees details if available
+    if state.current_employees:
+        context_parts.append("\nCURRENT EMPLOYEES (Merged list):")
+        for emp in state.current_employees:
+            context_parts.append(f"- {emp.name}: {emp.regular_hours}h regular, {emp.overtime_hours}h overtime @ ${emp.payrate}/hr")
+    else:
+        context_parts.append("\nCURRENT EMPLOYEES: None (needs merging)")
+    
+    # Add approval status
+    context_parts.append(f"\nUSER APPROVAL: {state.user_approval}")
+    
+    context = "\n".join(context_parts)
+    
+    # Add instructions about state management since we can't use bind_tools
+    system_content = config.react_system_prompt.format(
+        existing_count=len(state.existing_employees),
+        updated_count=len(state.updated_employees),
+        current_count=len(state.current_employees),
+        user_approval=state.user_approval
+    )
+    
+    # Add instructions about how to update state without bind_tools
+    system_content += "\n\nIMPORTANT: If you need to update the state, include a JSON object in your response like this: ```state_update{\"key\": \"value\"}```"
+    
+    # Process the conversation
+    response = await model.ainvoke([
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": context},
+        *state.messages
+    ])
+    
+    # Check if the response contains a state update directive
+    import re
+    state_update_match = re.search(r'```state_update(.*?)```', response.content, re.DOTALL)
+    
+    if state_update_match:
+        try:
+            import json
+            state_update = json.loads(state_update_match.group(1))
+            logger.info(f"Found state update in response: {state_update}")
+            
+            # Apply the state update
+            for key, value in state_update.items():
+                if key in state.__dict__:
+                    setattr(state, key, value)
+                    logger.info(f"Updated state.{key} = {value}")
+            
+            # Remove the state update directive from the response
+            clean_response = response.content.replace(state_update_match.group(0), "")
+            response = AIMessage(content=clean_response)
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing state update: {e}")
+    
+    return {"messages": [response]}
+
+
+async def payroll_agent(state: State) -> Dict:
+    """Generate payroll report with manual calculations."""
+    from react_agent.state import PayrollReport, PayrollEmployee
+    
+    # Use current employees or merge if needed
+    employees = state.current_employees or merge_employees(state.existing_employees, state.updated_employees)
+    
+    # Calculate payroll for each employee
+    payroll_employees = []
+    total_payroll = 0.0
+    
+    for emp in employees:
+        # Calculate regular pay
+        regular_pay = emp.regular_hours * emp.payrate
+        
+        # Calculate overtime pay (1.5x rate)
+        overtime_pay = emp.overtime_hours * (emp.payrate * 1.5)
+        
+        # Calculate total pay
+        total_pay = regular_pay + overtime_pay
+        total_payroll += total_pay
+        
+        # Create PayrollEmployee object
+        payroll_emp = PayrollEmployee(
+            name=emp.name,
+            regular_hours=emp.regular_hours,
+            overtime_hours=emp.overtime_hours,
+            payrate=emp.payrate,
+            regular_pay=regular_pay,
+            overtime_pay=overtime_pay,
+            total_pay=total_pay
+        )
+        payroll_employees.append(payroll_emp)
+    
+    # Create summary
+    summary = f"Payroll calculated for {len(payroll_employees)} employees. Total payroll: ${total_payroll:.2f}"
+    
+    # Create PayrollReport
+    report = PayrollReport(
+        employees=payroll_employees,
+        total_payroll=total_payroll,
+        summary=summary
+    )
+    
+    # Convert to dictionary for state storage
+    report_dict = {
+        "employees": [emp.model_dump() for emp in payroll_employees],
+        "total_payroll": total_payroll,
+        "summary": summary
+    }
+    
+    return {
+        "current_pay_data": report_dict,
+        "messages": [AIMessage(content=f"✅ Payroll calculated: {len(payroll_employees)} employees, Total: ${total_payroll:.2f}")]
+    }
+
+
+async def tool_executor(state: State) -> Dict:
+    """Execute tools."""
+    from langchain_core.messages import ToolMessage
+    
+    messages = []
+    updates = {}
+    
+    for tool_call in state.messages[-1].tool_calls:
+        if tool_call["name"] == "update_state":
+            try:
+                target = tool_call["args"]["target_list"]
+                emp_data = tool_call["args"]["employees"]
+                
+                # Convert to EmployeeData objects
+                employees = [EmployeeData(**emp) for emp in emp_data]
+                
+                # Update state
+                if target == "current_employees":
+                    updates["current_employees"] = employees
+                    updates["user_approval"] = True
+                    updates["trigger_payroll"] = True
+                elif target == "updated_employees":
+                    updates["updated_employees"] = employees
+                elif target == "existing_employees":
+                    updates["existing_employees"] = employees
+                
+                messages.append(ToolMessage(
+                    content=f"Updated {target} with {len(employees)} employees",
+                    tool_call_id=tool_call["id"]
+                ))
+                
+            except KeyError as e:
+                error_msg = f"Error in tool call: missing {e} in arguments"
+                messages.append(ToolMessage(
+                    content=error_msg,
+                    tool_call_id=tool_call["id"]
+                ))
+            except Exception as e:
+                error_msg = f"Error processing tool call: {str(e)}"
+                messages.append(ToolMessage(
+                    content=error_msg,
+                    tool_call_id=tool_call["id"]
+                ))
+    
+    return {"messages": messages, **updates}
+
+
+# Simple routing
+def route_init(state: State) -> Literal["vlm_processor", "update_agent"]:
+    return "vlm_processor" if state.document_uploaded else "update_agent"
+
+def route_vlm(state: State) -> Literal["update_agent"]:
+    return "update_agent"
+
+def route_update(state: State) -> Literal["tool_executor", "__end__"]:
+    return "tool_executor" if state.messages and state.messages[-1].tool_calls else "__end__"
+
+def route_tools(state: State) -> Literal["update_agent", "payroll_agent"]:
+    return "payroll_agent" if state.trigger_payroll else "update_agent"
+
+def route_payroll(state: State) -> Literal["update_agent"]:
+    return "update_agent"
+
+
+# Build graph
+builder = StateGraph(State)
+builder.add_node("init", init_node)
+builder.add_node("vlm_processor", vlm_processor)
+builder.add_node("update_agent", update_agent)
+builder.add_node("payroll_agent", payroll_agent)
+builder.add_node("tool_executor", tool_executor)
+
+builder.add_edge("__start__", "init")
+builder.add_conditional_edges("init", route_init)
+builder.add_conditional_edges("vlm_processor", route_vlm)
+builder.add_conditional_edges("update_agent", route_update)
+builder.add_conditional_edges("tool_executor", route_tools)
+builder.add_conditional_edges("payroll_agent", route_payroll)
+
+graph = builder.compile()
