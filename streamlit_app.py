@@ -318,7 +318,7 @@ async def get_agent_response(user_message: str):
     """Get response from the React agent for a user message."""
     from langchain_core.messages import HumanMessage
     
-    # Determine current workflow state
+    # Get current workflow state or create minimal initial state
     current_state = st.session_state.workflow_state if st.session_state.workflow_state else {}
     
     # Convert EmployeeData instances to dictionaries
@@ -331,21 +331,34 @@ async def get_agent_response(user_message: str):
         } for emp in st.session_state.existing_employees
     ]
     
-    # Create the state with the user's message and current context
-    initial_state = {
-        "messages": [HumanMessage(content=user_message)],
-        "existing_employees": existing_employees_dict,
-        "updated_employees": current_state.get('updated_employees', []),
-        "current_employees": current_state.get('current_employees', []),
-        "document_uploaded": False,  # For chat interactions, no document processing
-        "document_content": None,
-        "user_approval": current_state.get('user_approval', False),
-        "trigger_payroll": current_state.get('trigger_payroll', False),
-        "current_pay_data": current_state.get('current_pay_data', None)
-    }
+    # Continue existing workflow state, don't create fresh state
+    if current_state:
+        # We have an existing workflow - continue it
+        # Create a copy and add the new message
+        continued_state = current_state.copy()
+        
+        # Add new message to existing messages
+        existing_messages = continued_state.get('messages', [])
+        continued_state['messages'] = existing_messages + [HumanMessage(content=user_message)]
+        
+        # Ensure we have the latest existing employees
+        continued_state['existing_employees'] = existing_employees_dict
+        
+    else:
+        # First interaction - create initial state
+        continued_state = {
+            "messages": [HumanMessage(content=user_message)],
+            "existing_employees": existing_employees_dict,
+            "updated_employees": [],
+            "document_uploaded": False,  # For chat interactions, no document processing unless specified
+            "document_content": None,
+            "user_approval": False,
+            "trigger_payroll": False,
+            "current_pay_data": None
+        }
     
-    # Run the workflow
-    result = await graph.ainvoke(initial_state, config=get_agent_config())
+    # Run the workflow with continued state
+    result = await graph.ainvoke(continued_state, config=get_agent_config())
     
     # Update workflow state with the result
     if result:

@@ -8,11 +8,11 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import StateGraph
 from pydantic import BaseModel, Field
 
-from react_agent.configuration import Configuration
-from react_agent.state import State, EmployeeData, PayrollReport, InputState, OutputState
-from react_agent.utils import load_chat_model
-from react_agent.tools import merge_employees
-from react_agent.utils import load_previous_payperiod_data
+from .configuration import Configuration
+from .state import State, EmployeeData, PayrollReport
+from .utils import load_chat_model
+from .tools import merge_employees
+from .utils import load_previous_payperiod_data
 logger = logging.getLogger(__name__)
 
 
@@ -198,7 +198,7 @@ async def vlm_processor(state: State) -> Dict:
             if response.employees:
                 logger.info(f"Successfully extracted {len(response.employees)} employees via model fallback.")
                 employee_dicts = [emp.model_dump() for emp in response.employees]
-                return {"updates_list": employee_dicts, "document_processing_done": True}
+                return {"updates_list": employee_dicts, "document_processing_done": True , "document_uploaded":False}
 
         # If no data could be extracted, return an empty list
         logger.warning("Could not extract any employee data from the document.")
@@ -229,33 +229,42 @@ async def update_agent(state: State) -> Dict:
     # Get configuration
     config = Configuration.from_context()
     
-    # If we're generating a payroll, return a confirmation message
-    if state.trigger_payroll:
-        return {"messages": [AIMessage(content="Thank you for confirming! The payroll has been successfully generated and is ready for processing.")]}
+    # If user has already approved and we're generating payroll
+    if state.user_approval and state.trigger_payroll:
+        # Call payroll agent to generate the report
+        payroll_result = await payroll_agent(state)
+        return {
+            "messages": [AIMessage(content="✅ Payroll has been generated successfully! You can view the complete report above.")],
+            **payroll_result
+        }
     
-    # First, check if we have updates_list from document processing
-    # If so, move them to updated_employees if not already there
+    # Check if we have updates_list from document processing and move to updated_employees
     if state.updates_list and not state.updated_employees:
-        logger.info(f"Moving {len(state.updates_list)} employees from updates_list to updated_employees")
         # Convert updates_list to updated_employees
-        state.updated_employees = state.updates_list
-        # Clear updates_list to avoid duplication
-        state.updates_list = []
+        updated_employees = []
+        for emp in state.updates_list:
+            if isinstance(emp, dict):
+                updated_employees.append(EmployeeData(**emp))
+            else:
+                updated_employees.append(emp)
+        
+        return {
+            "updated_employees": updated_employees,
+            "updates_list": [],  # Clear updates_list since we've processed it
+            "messages": [AIMessage(content=f"📄 Document processed! Found {len(updated_employees)} employees. I'll now help you review and merge this data with your existing employees.")]
+        }
     
     # Load the model
     model = load_chat_model(fully_specified_name=config.react_model)
     
     # Process the conversation with the user
-    # Get the current messages to avoid duplicating them
     current_messages = state.messages
-    
-    # Use only the last 10 messages to keep context manageable
     recent_messages = current_messages[-10:] if len(current_messages) > 10 else current_messages
     
     # Create detailed context about all employee data
     context_parts = []
     
-    # Add existing employees details with full information
+    # Add existing employees details
     if state.existing_employees:
         context_parts.append("EXISTING EMPLOYEES (Previous pay period):")
         for emp in state.existing_employees:
@@ -263,7 +272,7 @@ async def update_agent(state: State) -> Dict:
     else:
         context_parts.append("EXISTING EMPLOYEES: None")
     
-    # Add updated employees details with full information
+    # Add updated employees details
     if state.updated_employees:
         context_parts.append("\nUPDATED EMPLOYEES (From current document):")
         for emp in state.updated_employees:
@@ -271,95 +280,60 @@ async def update_agent(state: State) -> Dict:
     else:
         context_parts.append("\nUPDATED EMPLOYEES: None")
     
-    # Add updates_list details if they exist
-    if state.updates_list:
-        context_parts.append("\nNEW UPDATES (Not yet processed):")
-        for emp in state.updates_list:
-            # Handle both dictionary and object formats
-            if isinstance(emp, dict):
-                name = emp.get("name", "Unknown")
-                reg_hours = emp.get("regular_hours", 0)
-                ot_hours = emp.get("overtime_hours", 0)
-                payrate = emp.get("payrate", 0)
-            else:
-                name = emp.name
-                reg_hours = emp.regular_hours
-                ot_hours = emp.overtime_hours
-                payrate = emp.payrate
-            context_parts.append(f"- {name}: {reg_hours}h regular, {ot_hours}h overtime @ ${payrate}/hr")
-    
     # Add approval status
     context_parts.append(f"\nUSER APPROVAL: {state.user_approval}")
     
     # Create system prompt with detailed instructions
     system_prompt = (
-        "You are a payroll assistant. Help users process employee payroll data. " 
-        "Your task is to:"
-        "\n1. Review existing employees from previous pay periods"
-        "\n2. Review updated employees from the current document"
-        "\n3. Help the user merge or update this information"
-        "\n4. When the user confirms, update the employee data"
-        "\n\nWhen the user confirms the data, you should merge existing and updated employees, prioritizing the updated data."
-        "\n\nCurrent employee data:\n" + "\n".join(context_parts)
+        "You are a payroll assistant. Help users process employee payroll data. "
+        "Your main tasks:\n"
+        "1. Review existing and updated employee data\n"
+        "2. Help merge/resolve conflicts automatically\n"
+        "3. Present a summary and ask for confirmation\n"
+        "4. Wait for explicit user confirmation before proceeding to payroll\n\n"
+        "When user confirms (says 'yes', 'confirm', 'approve', 'proceed', etc.), "
+        "use the update_state tool to update existing_employees with merged data.\n\n"
+        "Current employee data:\n" + "\n".join(context_parts)
     )
     
-    # Invoke the model with the conversation history
-    response = await model.ainvoke([
-        {"role": "system", "content": system_prompt},
-        *recent_messages
-    ])
-    
-    # Check if the user has confirmed the information and we should update the state
+    # Check if user is providing approval in their last message
     last_user_message = ""
     for msg in reversed(recent_messages):
         if hasattr(msg, "type") and msg.type == "human":
             last_user_message = msg.content.lower()
             break
     
-    # Look for confirmation keywords in the last user message
-    confirmation_keywords = ["confirm", "approved", "looks good", "correct", "yes", "proceed"]
+    # Look for confirmation keywords
+    confirmation_keywords = ["confirm", "approved", "looks good", "correct", "yes", "proceed", "generate payroll"]
     is_confirmed = any(keyword in last_user_message for keyword in confirmation_keywords)
     
-    # If user has confirmed and we have employee data to process
+    # If user confirmed and we have data to merge
     if is_confirmed and (state.updated_employees or state.existing_employees):
-        # Merge existing and updated employees, prioritizing updated data
-        from react_agent.tools import merge_employees
+        from .tools import merge_employees
         
-        # If we have both existing and updated employees, merge them
+        # Merge employees
         if state.existing_employees and state.updated_employees:
             merged_employees = merge_employees(state.existing_employees, state.updated_employees)
-            logger.info(f"Merged {len(state.existing_employees)} existing and {len(state.updated_employees)} updated employees")
-        # If we only have updated employees, use those
         elif state.updated_employees:
             merged_employees = state.updated_employees
-            logger.info(f"Using {len(state.updated_employees)} updated employees")
-        # If we only have existing employees, use those
         else:
             merged_employees = state.existing_employees
-            logger.info(f"Using {len(state.existing_employees)} existing employees")
         
-        # Create a summary of the merged data
-        summary_parts = [
-            "✅ **Employee data processed successfully!**",
-            f"📋 **Final employee list: {len(merged_employees)} employees**",
-            ""
-        ]
-        
-        # List all employees in the final list
-        summary_parts.append("**Employee data:**")
-        for emp in merged_employees:
-            summary_parts.append(f"- {emp.name}: {emp.regular_hours}h regular, {emp.overtime_hours}h overtime @ ${emp.payrate}/hr")
-        
-        summary_parts.append("\nWould you like to generate the payroll report now?")
-        
-        # Set user_approval to True and update the updated_employees list
+        # Return with approval flags set and trigger payroll
         return {
-            "messages": [AIMessage(content="\n".join(summary_parts))],
             "user_approval": True,
-            "updated_employees": [emp.model_dump() if hasattr(emp, 'model_dump') else emp for emp in merged_employees]
+            "trigger_payroll": True,
+            "existing_employees": [emp.model_dump() if hasattr(emp, 'model_dump') else emp for emp in merged_employees],
+            "messages": [AIMessage(content="✅ Thank you for confirming! Processing payroll now...")]
         }
     
-    # Convert response to AIMessage if it's not already
+    # For regular conversation, invoke the model
+    response = await model.ainvoke([
+        {"role": "system", "content": system_prompt},
+        *recent_messages
+    ])
+    
+    # Convert response to AIMessage if needed
     if not isinstance(response, AIMessage):
         response = AIMessage(content=response.content)
     
@@ -377,7 +351,7 @@ async def payroll_agent(state: State) -> Dict:
     logger.info(f"Existing employees count: {len(state.existing_employees)}")
     logger.info(f"Updated employees count: {len(state.updated_employees)}")
     
-    from react_agent.state import PayrollReport, PayrollEmployee
+    from .state import PayrollReport, PayrollEmployee
     
     # Merge existing and updated employees
     employees = merge_employees(state.existing_employees, state.updated_employees)
@@ -464,12 +438,8 @@ async def tool_executor(state: State) -> Dict:
                 # Convert to EmployeeData objects
                 employees = [EmployeeData(**emp) for emp in emp_data]
                 
-                # Update state
-                if target == "current_employees":
-                    updates["current_employees"] = employees
-                    updates["user_approval"] = True
-                    updates["trigger_payroll"] = True
-                elif target == "updated_employees":
+                # Update state - Remove automatic approval logic
+                if target == "updated_employees":
                     updates["updated_employees"] = employees
                 elif target == "existing_employees":
                     updates["existing_employees"] = employees
@@ -494,9 +464,6 @@ async def tool_executor(state: State) -> Dict:
                     tool_call_id=tool_call["id"]
                 )
                 tool_messages.append(tool_message)
-    
-    # Return only the tool messages, don't append to existing messages
-    # This prevents recursion issues
     
     # Log the state beautifully after processing
     log_state_beautifully(state, "tool_executor")
@@ -525,16 +492,48 @@ def route_vlm(state: State) -> Literal["update_agent"]:
     
     return "update_agent"
 
-def route_update(state: State) -> Literal["tool_executor", "__end__"]:
+def route_update(state: State) -> Literal["tool_executor", "update_agent", "__end__"]:
+    # If user has approved and payroll is triggered, end the workflow
+    if state.user_approval and state.trigger_payroll:
+        logger.info(f"=== ROUTING: update_agent -> __end__ (payroll completed) ===")
+        return "__end__"
+    
     # Check if the last message has tool calls
     has_tool_calls = False
     if state.messages and hasattr(state.messages[-1], 'tool_calls') and state.messages[-1].tool_calls:
         has_tool_calls = True
     
-    route = "tool_executor" if has_tool_calls else "__end__"
+    # Check if we're in a state where we should be waiting for user input
+    waiting_for_approval = (
+        # We have existing or updated employees (data to process)
+        (state.existing_employees or state.updated_employees) and
+        # User hasn't approved yet
+        not state.user_approval and
+        # We're not triggering payroll
+        not state.trigger_payroll and
+        # We have messages (active conversation)
+        state.messages and
+        # The last message is from the assistant (asking for confirmation)
+        hasattr(state.messages[-1], 'content') and 
+        isinstance(state.messages[-1], AIMessage)
+    )
+    
+    # Determine the route
+    if has_tool_calls:
+        route = "tool_executor"
+    elif waiting_for_approval:
+        # End the workflow to wait for user input - this prevents infinite loops
+        route = "__end__"
+    else:
+        # End the workflow
+        route = "__end__"
+    
     logger.info(f"=== ROUTING: update_agent -> {route} ===")
     logger.info(f"State object ID: {id(state)}")
     logger.info(f"Has tool calls: {has_tool_calls}")
+    logger.info(f"User approval: {state.user_approval}")
+    logger.info(f"Trigger payroll: {state.trigger_payroll}")
+    logger.info(f"Waiting for approval: {waiting_for_approval}")
     if has_tool_calls and state.messages:
         logger.info(f"Tool calls count: {len(state.messages[-1].tool_calls)}")
     
@@ -557,7 +556,7 @@ def route_tools(state: State) -> Literal["update_agent"]:
 
 
 # Build graph
-builder = StateGraph(State, input_state=InputState, output_state=OutputState)
+builder = StateGraph(State)
 builder.add_node("init", init_node)
 builder.add_node("vlm_processor", vlm_processor)
 builder.add_node("update_agent", update_agent)

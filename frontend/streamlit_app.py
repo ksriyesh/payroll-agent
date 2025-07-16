@@ -262,6 +262,9 @@ if 'api_status' not in st.session_state:
 # Initialize app mode (document processing or chat)
 if 'app_mode' not in st.session_state:
     st.session_state.app_mode = "chat"  # Default to chat mode
+# Initialize interaction tracking to prevent duplicate processing
+if 'last_interaction_key' not in st.session_state:
+    st.session_state.last_interaction_key = None
 # Define supported file types
 SUPPORTED_FILE_TYPES = ["png", "jpg", "jpeg", "pdf", "docx", "txt", "xlsx", "csv"]
 
@@ -456,6 +459,7 @@ def get_agent_response(user_message, file_data=None, file_path=None, file_type=N
                 return f"❌ Unsupported file type: {file_extension}. Supported types: {', '.join(SUPPORTED_FILE_TYPES)}"
         
         # Prepare the request data for the unified chat endpoint
+        # Include current workflow state for continuation
         data = {
             "content": user_message,
             "existing_employees": st.session_state.existing_employees,
@@ -464,6 +468,7 @@ def get_agent_response(user_message, file_data=None, file_path=None, file_type=N
             "user_approval": st.session_state.workflow_state["user_approval"],
             "trigger_payroll": st.session_state.workflow_state["trigger_payroll"],
             "current_pay_data": st.session_state.workflow_state["current_pay_data"],
+            "workflow_state": st.session_state.workflow_state,  # Pass full workflow state
             "file_data": file_data,
             "file_path": file_path,
             "file_type": file_type
@@ -511,11 +516,18 @@ def get_agent_response(user_message, file_data=None, file_path=None, file_type=N
                 
                 return response_content
             else:
-                return f"Error: {result.get('message', 'Unknown error occurred')}"
+                error_msg = result.get("message", "Unknown error occurred")
+                st.error(f"❌ Error: {error_msg}")
+                return f"I encountered an error: {error_msg}"
         else:
-            return f"Error: Failed to get response from the backend (Status code: {response.status_code})"
+            error_msg = f"API returned status code {response.status_code}"
+            st.error(f"❌ Error: {error_msg}")
+            return f"I encountered an error: {error_msg}"
+            
     except Exception as e:
-        return f"Error processing your request: {str(e)}"
+        error_msg = f"Error communicating with backend: {str(e)}"
+        st.error(f"❌ {error_msg}")
+        return f"I encountered an error: {error_msg}"
 
 def display_payroll_report(payroll_data):
     """Display payroll report from dictionary."""
@@ -640,7 +652,7 @@ def main():
                         
                         # Prompt user to review data in the Employee Data tab
                         st.info("👉 Please review the extracted employee data in the Employee Data tab and confirm if it's correct.")
-                        st.rerun()
+                        # UI will update naturally with session state changes
     
     else:  # Chat Mode
         # Create a unified chat interface that can handle both text messages and file uploads
@@ -664,43 +676,52 @@ def main():
         
         # Only process when the user sends a message, not when they just upload a file
         if prompt:
+            # Create a unique key for this interaction to prevent duplicate processing
+            interaction_key = f"{prompt}_{uploaded_file.name if uploaded_file else 'no_file'}_{len(st.session_state.messages)}"
             
-            # If a file was uploaded, process it
-            file_data = None
-            file_path = None
-            file_type = None
-            
-            if uploaded_file is not None:
-                # Track the last uploaded file to prevent duplicate processing
-                st.session_state["last_uploaded_file"] = uploaded_file.name
+            # Check if we've already processed this exact interaction
+            if st.session_state.last_interaction_key != interaction_key:
+                # Store this interaction key to prevent duplicates
+                st.session_state.last_interaction_key = interaction_key
                 
-                # Read and encode the file
-                file_bytes = uploaded_file.getvalue()
-                file_data = base64.b64encode(file_bytes).decode('utf-8')
-                file_path = uploaded_file.name
-                file_type = uploaded_file.type
+                # If a file was uploaded, process it
+                file_data = None
+                file_path = None
+                file_type = None
                 
-                # Add user message about the file upload
-                if prompt:
-                    message_content = f"I'm uploading {file_path} and asking: {prompt}"
+                if uploaded_file is not None:
+                    # Track the last uploaded file to prevent duplicate processing
+                    st.session_state["last_uploaded_file"] = uploaded_file.name
+                    
+                    # Read and encode the file
+                    file_bytes = uploaded_file.getvalue()
+                    file_data = base64.b64encode(file_bytes).decode('utf-8')
+                    file_path = uploaded_file.name
+                    file_type = uploaded_file.type
+                    
+                    # Add user message about the file upload
+                    if prompt:
+                        message_content = f"I'm uploading {file_path} and asking: {prompt}"
+                    else:
+                        message_content = f"I'm uploading {file_path} for processing."
+                        prompt = f"Please process this {file_type} document and extract employee data."
+                    
+                    st.session_state.messages.append({"role": "user", "content": message_content})
                 else:
-                    message_content = f"I'm uploading {file_path} for processing."
-                    prompt = f"Please process this {file_type} document and extract employee data."
+                    # Just a regular text message
+                    st.session_state.messages.append({"role": "user", "content": prompt})
                 
-                st.session_state.messages.append({"role": "user", "content": message_content})
-            else:
-                # Just a regular text message
-                st.session_state.messages.append({"role": "user", "content": prompt})
-            
-            # Process the request using the unified chat endpoint
-            response = get_agent_response(prompt, file_data, file_path, file_type)
-            
-            # Add assistant response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            
-            # Force a rerun to update the UI
-            st.rerun()
-    
+                # Process the request using the unified chat endpoint
+                response = get_agent_response(prompt, file_data, file_path, file_type)
+                
+                # Add assistant response to chat history
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                
+                # Instead of st.rerun(), use st.experimental_rerun() or better yet, just let Streamlit
+                # naturally update the UI on the next interaction. The session state changes
+                # will be reflected automatically.
+                # st.rerun()  # REMOVED - This was causing duplicate requests
+
     # Create tabs for different functionalities
     tab1, tab2 = st.tabs(["👥 Employee Data", "📊 Payroll Report"])
     
@@ -727,7 +748,7 @@ def main():
                 payroll_result = generate_payroll()
                 if payroll_result and "payroll_report" in payroll_result:
                     st.success("✅ Payroll report generated successfully!")
-                    st.rerun()
+                    # UI will update naturally with session state changes
         else:
             # No existing employees yet
             st.info("No employee data available yet. Upload a document in either Document Processing Mode or Chat Mode to extract employee data.")
@@ -761,14 +782,14 @@ def main():
                     merge_result = merge_employees()
                     if merge_result and "merged_employees" in merge_result:
                         st.success(f"Successfully merged {len(merge_result['merged_employees'])} employees!")
-                        st.rerun()
+                        # UI will update naturally with session state changes
             
             with confirm_col2:
                 if st.button("❌ Discard Extracted Data", use_container_width=True):
                     # Reset the updated employees list
                     st.session_state.workflow_state["updated_employees"] = []
                     st.success("Extracted data discarded. You can upload another document or try again.")
-                    st.rerun()
+                    # UI will update naturally with session state changes
     
     with tab2:
         st.markdown("### Payroll Report")
@@ -781,7 +802,7 @@ def main():
                 payroll_result = generate_payroll()
                 if payroll_result and "payroll_report" in payroll_result:
                     st.success("✅ Payroll report regenerated successfully!")
-                    st.rerun()
+                    # UI will update naturally with session state changes
         else:
             # No payroll report yet
             if st.session_state.existing_employees:
@@ -793,7 +814,7 @@ def main():
                     payroll_result = generate_payroll()
                     if payroll_result and "payroll_report" in payroll_result:
                         st.success("✅ Payroll report generated successfully!")
-                        st.rerun()
+                        # UI will update naturally with session state changes
             else:
                 # No employees and no report
                 st.info("No employee data available yet. You need to process documents first to extract employee data.")

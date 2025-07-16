@@ -3,7 +3,7 @@
 import os
 from typing import Annotated
 from pydantic import BaseModel, Field
-from react_agent import prompts
+from . import prompts
 
 # Optional LangSmith tracing
 if os.getenv("LANGSMITH_API_KEY"):

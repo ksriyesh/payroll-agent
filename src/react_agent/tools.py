@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 from typing import List, Dict, Any
 from langchain_core.tools import tool
-from react_agent.state import EmployeeData
+from .state import EmployeeData
 
 
 @tool

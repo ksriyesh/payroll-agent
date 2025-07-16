@@ -25,11 +25,11 @@ from src.react_agent.graph import graph
 from src.react_agent.configuration import Configuration
 from src.react_agent.state import EmployeeData, PayrollReport, PayrollEmployee
 from src.react_agent.tools import merge_employees
-from src.react_agent.graph import graph as agent_graph
+from src.react_agent.graph import graph
 
 def get_agent_graph():
     """Get the agent graph from the react_agent module."""
-    return agent_graph
+    return graph
 
 # Create FastAPI app
 app = FastAPI(title="Payroll Agent API", 
@@ -469,17 +469,21 @@ async def chat(request: dict):
     """Process a chat message and return the agent's response.
     
     This unified endpoint can handle both text messages and document uploads.
-    Uses LangChain's Multimodal Inputs API for processing documents.
+    Maintains workflow state between messages.
     """
     try:
         import traceback
         from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
         from src.react_agent.utils import load_chat_model
+        
         # Extract request data
         content = request.get("content", "")
         file_data = request.get("file_data")
         file_path = request.get("file_path")
         file_type = request.get("file_type")
+        
+        # Get current workflow state from request (sent by frontend)
+        workflow_state = request.get("workflow_state", {})
         
         # Initialize state using the State model from state.py
         from src.react_agent.state import State, EmployeeData
@@ -498,17 +502,46 @@ async def chat(request: dict):
                 updated_employees.append(EmployeeData(**emp))
             else:
                 updated_employees.append(emp)
-                
-        # Removed current_employees handling as it's no longer needed
         
-        # Create state object
-        state = State(
-            existing_employees=existing_employees,
-            updated_employees=updated_employees,
-            user_approval=request.get("user_approval", False),
-            trigger_payroll=request.get("trigger_payroll", False),
-            current_pay_data=request.get("current_pay_data"),
-        )
+        # Check if we have existing workflow state to continue
+        if workflow_state and workflow_state.get('messages'):
+            # Continue existing workflow - preserve the state
+            logging.info("Continuing existing workflow state")
+            
+            # Create state from existing workflow state
+            state = State(
+                messages=workflow_state.get('messages', []),
+                existing_employees=existing_employees,
+                updated_employees=updated_employees,
+                updates_list=workflow_state.get('updates_list', []),
+                document_uploaded=workflow_state.get('document_uploaded', False),
+                document_content=workflow_state.get('document_content'),
+                document_processing_done=workflow_state.get('document_processing_done', False),
+                user_approval=workflow_state.get('user_approval', False),
+                trigger_payroll=workflow_state.get('trigger_payroll', False),
+                current_pay_data=workflow_state.get('current_pay_data'),
+                file_data=workflow_state.get('file_data'),
+                file_path=workflow_state.get('file_path'),
+                file_type=workflow_state.get('file_type')
+            )
+            
+            # Add new message to existing messages
+            state.messages.append(HumanMessage(content=content))
+            
+        else:
+            # First interaction - create fresh state
+            logging.info("Creating fresh workflow state")
+            
+            state = State(
+                existing_employees=existing_employees,
+                updated_employees=updated_employees,
+                user_approval=request.get("user_approval", False),
+                trigger_payroll=request.get("trigger_payroll", False),
+                current_pay_data=request.get("current_pay_data"),
+            )
+            
+            # Add user message to state
+            state.messages.append(HumanMessage(content=content))
         
         # Check if a file was uploaded
         if file_data:
@@ -518,17 +551,8 @@ async def chat(request: dict):
             # Log file upload
             logging.info(f"File upload detected in chat: {file_path}")
             
-            # Create a multimodal message with the file data
-            # This will be processed by the graph workflow, not here
-            from langchain_core.messages import HumanMessage
-            
-            # Prepare prompt text
-            prompt_text = content if content else "Please process this document and extract employee data."
-            
-            # Create a human message with the file content
-            # We're not processing the image here anymore, just adding it to the message
+            # Store the file data in the state for the graph to process
             try:
-                # Store the file data in the state for the graph to process
                 state.file_data = file_data
                 state.file_path = file_path
                 state.file_type = file_type
@@ -540,42 +564,17 @@ async def chat(request: dict):
         # Get the agent graph
         graph = get_agent_graph()
         
-        # Add user message to state
-        state.messages.append(HumanMessage(content=content))
-        
         # Convert any EmployeeData objects to dictionaries before invoking the graph
-        # This prevents Pydantic validation errors when the graph processes the state
         if hasattr(state, 'updated_employees') and state.updated_employees:
             state.updated_employees = [emp.model_dump() if hasattr(emp, 'model_dump') else emp for emp in state.updated_employees]
         
         if hasattr(state, 'existing_employees') and state.existing_employees:
             state.existing_employees = [emp.model_dump() if hasattr(emp, 'model_dump') else emp for emp in state.existing_employees]
             
-        # Removed current_employees conversion as it's no longer needed
-            
-        # Invoke the graph with the state - use ainvoke for async functions
+        # Invoke the graph with the state
         try:
-            # Create a fresh state object for each invocation to prevent recursion
-            from react_agent.state import State
-            from copy import deepcopy
-            
-            # Create a new state with only the essential data
-            fresh_state = State(
-                messages=state.messages,  # Keep the messages
-                document_uploaded=state.document_uploaded,
-                document_content=state.document_content,
-                document_processing_done=state.document_processing_done,
-                existing_employees=state.existing_employees,
-                updated_employees=state.updated_employees,
-                user_approval=state.user_approval,
-                trigger_payroll=state.trigger_payroll,
-                file_data=state.file_data,
-                file_path=state.file_path,
-                file_type=state.file_type
-            )
-            
-            # Use the fresh state to prevent recursion
-            result = await graph.ainvoke(fresh_state)
+            logging.info(f"Invoking graph with state containing {len(state.messages)} messages")
+            result = await graph.ainvoke(state)
         except Exception as e:
             logging.error(f"Error invoking graph: {str(e)}")
             # Return error response
@@ -596,19 +595,24 @@ async def chat(request: dict):
             elif isinstance(message, dict) and 'content' in message:
                 response_content = message['content']
         
-        # Prepare response data - keep it simple and agile
+        # Prepare response data - include full workflow state for continuation
         response_data = {
             "success": True,
             "data": {
                 "response": response_content,
                 "workflow_state": {
+                    "messages": result.get('messages', []),
                     "document_uploaded": result.get('document_uploaded', False),
                     "document_processing_done": result.get('document_processing_done', False),
                     "updated_employees": [emp.dict() if hasattr(emp, 'dict') else emp for emp in result.get('updated_employees', [])],
                     "existing_employees": [emp.dict() if hasattr(emp, 'dict') else emp for emp in result.get('existing_employees', [])],
+                    "updates_list": result.get('updates_list', []),
                     "user_approval": result.get('user_approval', False),
                     "trigger_payroll": result.get('trigger_payroll', False),
-                    "current_pay_data": result.get('current_pay_data')
+                    "current_pay_data": result.get('current_pay_data'),
+                    "file_data": result.get('file_data'),
+                    "file_path": result.get('file_path'),
+                    "file_type": result.get('file_type')
                 }
             }
         }
