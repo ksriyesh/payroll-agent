@@ -6,13 +6,47 @@ from typing import Dict, List, Literal
 from langchain_core.messages import AIMessage
 from langgraph.graph import StateGraph
 from pydantic import BaseModel
-
+import pprint
 from .configuration import Configuration
 from .state import State, EmployeeData
 from .utils import load_chat_model, load_previous_payperiod_data
 
 logger = logging.getLogger(__name__)
 
+def log_state_beautifully(state: State, node_name: str):
+    """Log the state in a beautiful and structured manner."""
+    logger.info(f"\n{'='*20} STATE AFTER {node_name} {'='*20}")
+    
+    # Create a dictionary representation of the state for pretty printing
+    state_dict = {
+        'messages_count': len(state.messages),
+        'document_uploaded': state.document_uploaded,
+        'document_processing_done': state.document_processing_done,
+        'user_approval': state.user_approval,
+        'trigger_payroll': state.trigger_payroll,
+        'existing_employees': state.existing_employees,
+        'updated_employees': state.updated_employees,
+        'temp_merged_list': state.temp_merged_list,
+        'updates_list': state.updates_list,
+        'file_data_exists': bool(state.file_data),
+        'file_path': state.file_path,
+        'file_type': state.file_type,
+    }
+    
+    # Add message details
+    if state.messages:
+        last_message = state.messages[-1]
+        state_dict["messages"] = state.messages
+        state_dict['last_message'] = {
+            'type': type(last_message).__name__,
+            'has_tool_calls': hasattr(last_message, 'tool_calls') and bool(last_message.tool_calls),
+        }
+        if hasattr(last_message, 'content'):
+            preview = str(last_message.content) + '...' if len(str(last_message.content)) > 50 else str(last_message.content)
+            state_dict['last_message']['content_preview'] = preview
+    formatted_state = pprint.pformat(state_dict, indent=2)
+    logger.info(f"\n{formatted_state}\n{'='*50}\n")
+    
 
 async def init_node(state: State) -> Dict:
     """Initialize workflow: check for file uploads and load existing employees."""
@@ -81,12 +115,12 @@ async def vlm_processor(state: State) -> Dict:
             if result and "structured_data" in result and "employees" in result["structured_data"]:
                 employees_data = result["structured_data"]["employees"]
                 logger.info(f"Successfully extracted {len(employees_data)} employees")
-                
                 return {
                     "updates_list": employees_data,
                     "document_uploaded": False,
                     "document_processing_done": True
                 }
+        log_state_beautifully(state, "vlm_processor")
         
         logger.warning("Could not extract employee data from document")
         return {
@@ -157,6 +191,8 @@ async def update_agent(state: State) -> Dict:
     
     # PRIORITY 1: Handle user confirmation if temp_merged_list exists
     if state.temp_merged_list:
+        logger.info(f"Entering Priority 1")
+        log_state_beautifully(state, "update_agent_priority_1")
         logger.info(f"temp_merged_list has {len(state.temp_merged_list)} employees - checking for confirmation")
         
         # Check for confirmation in natural language
@@ -309,6 +345,8 @@ Please review this data carefully. If everything looks correct, just say "yes" o
     
     # PRIORITY 2: Handle interactions when updated_employees is populated
     if state.updated_employees:
+        logger.info(f"Entering Priority 2")
+        log_state_beautifully(state, "update_agent_priority_2")
         # Create current employee context
         employee_summary = []
         for emp in state.updated_employees:
@@ -341,7 +379,8 @@ Handle all requests naturally through conversation. When making changes, update 
         return {"messages": [response]}
     
     # PRIORITY 3: If updated_employees is empty and we have updates_list, perform initial merge
-    if not state.updated_employees and state.updates_list:
+    if not state.updated_employees and state.updates_list and not state.temp_merged_list:
+        logger.info(f"Entering Priority 3")
         logger.info("Performing initial merge of updates_list with existing_employees")
         
         merged_list = merge_with_conflict_resolution(state.existing_employees, state.updates_list)
@@ -380,6 +419,8 @@ Your task: Present this merged data clearly to the user and ask for their confir
         }
     
     # PRIORITY 4: Default response for other cases
+    logger.info(f"Entering Priority 4")
+    log_state_beautifully(state, "update_agent_priority_4")
     response = await model.ainvoke([
         {"role": "system", "content": "You are a payroll assistant. Help the user with their payroll processing needs."},
         *state.messages[-5:]
@@ -411,6 +452,7 @@ def route_vlm(state: State) -> Literal["update_agent"]:
 
 def route_update(state: State) -> Literal["__end__"]:
     """Route from update_agent: always end (user can continue conversation)."""
+    log_state_beautifully(state, "update_agent")
     logger.info("=== ROUTING: update_agent -> __end__ ===")
     return "__end__"
     
