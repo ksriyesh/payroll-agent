@@ -12,6 +12,52 @@ from langchain_core.tools import tool
 from .state import EmployeeData
 
 
+def merge_employees(existing_employees: List[EmployeeData], updated_employees: List[EmployeeData]) -> List[EmployeeData]:
+    """
+    Merge existing employees with updated employees using automatic conflict resolution.
+    - Missing employees: Add from existing_employees with same data
+    - Conflicts: updated_employees takes precedence 
+    - New employees: Add from updated_employees
+    
+    Args:
+        existing_employees: Current employee list
+        updated_employees: New/updated employee data
+        
+    Returns:
+        List of merged EmployeeData objects
+    """
+    logger.info(f"Merging {len(existing_employees)} existing + {len(updated_employees)} updates")
+    
+    merged = {}
+    
+    # First, add all existing employees
+    for emp in existing_employees:
+        emp_dict = emp.model_dump() if hasattr(emp, 'model_dump') else emp.__dict__
+        merged[emp_dict["name"]] = EmployeeData(**emp_dict)
+    
+    # Then, update/add from updated_employees (takes precedence)
+    for emp in updated_employees:
+        emp_dict = emp.model_dump() if hasattr(emp, 'model_dump') else emp.__dict__
+        
+        if emp_dict["name"] in merged:
+            # Employee exists - merge with updates taking precedence
+            existing_emp = merged[emp_dict["name"]]
+            merged_emp_data = {
+                "name": emp_dict["name"],
+                "regular_hours": emp_dict["regular_hours"],  # Updates take precedence
+                "overtime_hours": emp_dict["overtime_hours"],  # Updates take precedence
+                "payrate": emp_dict["payrate"] if emp_dict["payrate"] > 0 else existing_emp.payrate  # Keep existing payrate if updates has 0
+            }
+            merged[emp_dict["name"]] = EmployeeData(**merged_emp_data)
+        else:
+            # New employee from updated_employees
+            merged[emp_dict["name"]] = EmployeeData(**emp_dict)
+    
+    result = list(merged.values())
+    logger.info(f"Merge complete: {len(result)} total employees")
+    return result
+
+
 @tool
 def update_state(employees: List[Dict[str, Any]], target_list: str) -> str:
     """Update employee state list."""
@@ -52,97 +98,34 @@ async def convert_document_to_images(file_path: str) -> List[bytes]:
                 doc = fitz.open(file_path)
                 images = []
                 
-                logger.debug(f"PDF pages: {len(doc)}")
                 for page_num in range(len(doc)):
-                    logger.debug(f"Processing page {page_num + 1}")
                     page = doc.load_page(page_num)
-                    
-                    # Render page to image with 2x scaling for better quality
-                    mat = fitz.Matrix(2.0, 2.0)  # 2x scaling
-                    pix = page.get_pixmap(matrix=mat)
-                    
-                    # Convert to PNG bytes
-                    png_bytes = pix.tobytes("png")
-                    images.append(png_bytes)
-                    logger.debug(f"Page {page_num + 1} converted, size: {len(png_bytes)} bytes")
+                    # Render page to pixmap (image)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better quality
+                    img_data = pix.tobytes("png")
+                    images.append(img_data)
+                    logger.debug(f"Converted page {page_num + 1} to image")
                 
                 doc.close()
                 return images
             
-            images = await asyncio.to_thread(process_pdf)
-            logger.info(f"✅ PDF converted to {len(images)} images")
+            # Run in thread pool
+            loop = asyncio.get_event_loop()
+            images = await loop.run_in_executor(None, process_pdf)
+            logger.info(f"✅ PDF conversion complete: {len(images)} pages")
             return images
-        
-        elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif']:
-            logger.info(f"🖼️ Processing image file: {file_ext}")
-            # Process image in thread to avoid blocking
-            def process_image():
-                fitz, Image = _import_dependencies()
-                image = Image.open(file_path)
-                
-                # Convert to RGB if needed
-                if image.mode != 'RGB':
-                    logger.debug(f"Converting from {image.mode} to RGB")
-                    image = image.convert('RGB')
-                
-                # Save as PNG bytes
-                import io
-                img_buffer = io.BytesIO()
-                image.save(img_buffer, format='PNG')
-                png_bytes = img_buffer.getvalue()
-                logger.debug(f"Image converted, size: {len(png_bytes)} bytes")
-                return [png_bytes]
             
-            images = await asyncio.to_thread(process_image)
-            logger.info("✅ Image converted to PNG")
-            return images
-        
+        elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']:
+            logger.info("🖼️  Processing image file")
+            # For image files, just return the file content
+            with open(file_path, 'rb') as f:
+                image_data = f.read()
+            return [image_data]
+            
         else:
-            logger.error(f"❌ Unsupported file type: {file_ext}")
-            raise ValueError(f"Unsupported file type: {file_ext}")
-    
+            logger.warning(f"⚠️  Unsupported file type: {file_ext}")
+            return []
+            
     except Exception as e:
-        logger.error(f"❌ Error converting document to images: {str(e)}", exc_info=True)
-        raise
-
-
-def merge_employees(existing: List[EmployeeData], updated: List[EmployeeData]) -> List[EmployeeData]:
-    """Automatically merge employee lists with conflict resolution:
-    - If employee missing from updated list but exists in existing list: add to updated list
-    - If updated employee has empty/zero fields: use existing employee data  
-    - Updated employees take precedence over existing
-    - All existing employees are preserved in final list
-    """
-    result = []
-    existing_dict = {emp.name: emp for emp in existing}
-    updated_dict = {emp.name: emp for emp in updated}
-    
-    # Process all existing employees first (they all get preserved)
-    for existing_emp in existing:
-        if existing_emp.name in updated_dict:
-            # Employee exists in both lists - merge with updated taking precedence
-            updated_emp = updated_dict[existing_emp.name]
-            
-            # Handle empty fields: use existing data if updated has empty/zero values
-            final_regular_hours = updated_emp.regular_hours if updated_emp.regular_hours > 0 else existing_emp.regular_hours
-            final_overtime_hours = updated_emp.overtime_hours if updated_emp.overtime_hours > 0 else existing_emp.overtime_hours
-            final_payrate = updated_emp.payrate if updated_emp.payrate > 0 else existing_emp.payrate
-            
-            # Create merged employee with best available data
-            merged_emp = EmployeeData(
-                name=existing_emp.name,
-                regular_hours=final_regular_hours,
-                overtime_hours=final_overtime_hours,
-                payrate=final_payrate
-            )
-            result.append(merged_emp)
-        else:
-            # Employee missing from updated list - add from existing list
-            result.append(existing_emp)
-    
-    # Add any new employees from updated list that don't exist in existing
-    for updated_emp in updated:
-        if updated_emp.name not in existing_dict:
-            result.append(updated_emp)
-    
-    return result
+        logger.error(f"❌ Error converting document: {str(e)}")
+        return []

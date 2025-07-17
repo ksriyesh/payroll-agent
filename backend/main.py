@@ -514,6 +514,7 @@ async def chat(request: dict):
                 existing_employees=existing_employees,
                 updated_employees=updated_employees,
                 updates_list=workflow_state.get('updates_list', []),
+                temp_merged_list=workflow_state.get('temp_merged_list', []),
                 document_uploaded=workflow_state.get('document_uploaded', False),
                 document_content=workflow_state.get('document_content'),
                 document_processing_done=workflow_state.get('document_processing_done', False),
@@ -570,21 +571,106 @@ async def chat(request: dict):
         
         if hasattr(state, 'existing_employees') and state.existing_employees:
             state.existing_employees = [emp.model_dump() if hasattr(emp, 'model_dump') else emp for emp in state.existing_employees]
-            
-        # Invoke the graph with the state
-        try:
-            logging.info(f"Invoking graph with state containing {len(state.messages)} messages")
-            result = await graph.ainvoke(state)
-        except Exception as e:
-            logging.error(f"Error invoking graph: {str(e)}")
-            # Return error response
-            return {
-                "success": False,
-                "data": {
-                    "response": f"I encountered an error processing your request: {str(e)}",
-                    "workflow_state": {}
+        
+        # Determine if we need full workflow or just update_agent
+        needs_full_workflow = (
+            file_data is not None or  # New file upload
+            not workflow_state.get('messages') or  # First interaction
+            state.document_uploaded and not state.document_processing_done  # Document needs processing
+        )
+        
+        # For confirmation cases, we can use direct update_agent if temp_merged_list exists
+        has_temp_merged_data = workflow_state.get('temp_merged_list') and len(workflow_state.get('temp_merged_list', [])) > 0
+        is_likely_confirmation = content.lower().strip() in ['yes', 'confirm', 'ok', 'okay', 'approve', 'proceed']
+        
+        if has_temp_merged_data and is_likely_confirmation:
+            logger.info(f"Detected confirmation message '{content}' with temp_merged_list data - using direct update_agent")
+            needs_full_workflow = False
+        
+        if needs_full_workflow:
+            # Invoke the full graph workflow
+            logger.info(f"Invoking FULL WORKFLOW - document uploaded: {state.document_uploaded}, first interaction: {not workflow_state.get('messages')}")
+            try:
+                result = await graph.ainvoke(state)
+            except Exception as e:
+                logging.error(f"Error invoking graph: {str(e)}")
+                # Return error response
+                return {
+                    "success": False,
+                    "data": {
+                        "response": f"I encountered an error processing your request: {str(e)}",
+                        "workflow_state": {}
+                    }
                 }
-            }
+        else:
+            # For regular chat messages, just invoke update_agent directly
+            logger.info("Invoking UPDATE_AGENT ONLY for regular chat interaction")
+            logger.info(f"Current workflow_state temp_merged_list: {len(workflow_state.get('temp_merged_list', []))} items")
+            logger.info(f"State temp_merged_list: {len(getattr(state, 'temp_merged_list', []))} items")
+            
+            try:
+                from src.react_agent.graph import update_agent
+                
+                # Explicitly ensure all workflow state is transferred
+                if hasattr(state, 'temp_merged_list'):
+                    current_temp_list = getattr(state, 'temp_merged_list', [])
+                    workflow_temp_list = workflow_state.get('temp_merged_list', [])
+                    logger.info(f"Current state temp_merged_list: {len(current_temp_list)}")
+                    logger.info(f"Workflow state temp_merged_list: {len(workflow_temp_list)}")
+                    
+                    # Force update if workflow has data but state doesn't
+                    if not current_temp_list and workflow_temp_list:
+                        state.temp_merged_list = workflow_temp_list
+                        logger.info(f"✅ Updated state temp_merged_list with {len(workflow_temp_list)} items")
+                
+                # Ensure other critical fields are transferred
+                for key in ['updates_list', 'document_processing_done', 'existing_employees']:
+                    if hasattr(state, key):
+                        current_value = getattr(state, key, [])
+                        workflow_value = workflow_state.get(key, [])
+                        if not current_value and workflow_value:
+                            setattr(state, key, workflow_value)
+                            logger.info(f"✅ Updated state {key} with workflow data")
+                
+                logger.info(f"Final state temp_merged_list before update_agent: {len(getattr(state, 'temp_merged_list', []))} items")
+                
+                result = await update_agent(state)
+                
+                # Merge result back into state for consistency
+                for key, value in result.items():
+                    if key == "messages":
+                        # Extend existing messages with new ones
+                        state.messages.extend(value)
+                    else:
+                        setattr(state, key, value)
+                
+                # Convert state back to dict for response
+                result = {
+                    "messages": state.messages,
+                    "document_uploaded": state.document_uploaded,
+                    "document_processing_done": state.document_processing_done,
+                    "updated_employees": state.updated_employees,
+                    "existing_employees": state.existing_employees,
+                    "updates_list": state.updates_list,
+                    "temp_merged_list": getattr(state, 'temp_merged_list', []),
+                    "user_approval": state.user_approval,
+                    "trigger_payroll": state.trigger_payroll,
+                    "current_pay_data": state.current_pay_data,
+                    "file_data": state.file_data,
+                    "file_path": state.file_path,
+                    "file_type": state.file_type
+                }
+                
+            except Exception as e:
+                logging.error(f"Error invoking update_agent: {str(e)}")
+                # Return error response
+                return {
+                    "success": False,
+                    "data": {
+                        "response": f"I encountered an error processing your message: {str(e)}",
+                        "workflow_state": {}
+                    }
+                }
         
         # Extract the last AI message as the response
         response_content = "I'm not sure how to respond to that."
@@ -607,6 +693,7 @@ async def chat(request: dict):
                     "updated_employees": [emp.dict() if hasattr(emp, 'dict') else emp for emp in result.get('updated_employees', [])],
                     "existing_employees": [emp.dict() if hasattr(emp, 'dict') else emp for emp in result.get('existing_employees', [])],
                     "updates_list": result.get('updates_list', []),
+                    "temp_merged_list": result.get('temp_merged_list', []),
                     "user_approval": result.get('user_approval', False),
                     "trigger_payroll": result.get('trigger_payroll', False),
                     "current_pay_data": result.get('current_pay_data'),

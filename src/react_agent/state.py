@@ -59,6 +59,7 @@ class State(BaseModel):
     existing_employees: List[EmployeeData] = Field(default_factory=list)
     updated_employees: List[EmployeeData] = Field(default_factory=list)
     updates_list: List[EmployeeData] = Field(default_factory=list)
+    temp_merged_list: List[Dict[str, Any]] = Field(default_factory=list, description="Temporarily stored merged employee data for confirmation")
     
     document_content: Optional[str] = Field(default=None)
     document_uploaded: bool = Field(default=False)
